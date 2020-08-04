@@ -1,0 +1,228 @@
+function [ps,discrete] = process_event(ps,event,opt)
+% usage: [ps,discrete] = process_event(ps,event,opt)
+% process the event specified in the event vector (one row of an event matrix)
+
+
+if size(event,1)>1
+    error('process_event:err','can only process one event at a time.');
+end
+
+verbose = opt.verbose;
+discrete = false;   % is this a discrete event?
+
+% extract some data
+C = psconstants;
+t = event(C.ev.time);
+
+% record the event
+ps.event_record = [ps.event_record;event];
+
+% do the processing
+switch event(C.ev.type)
+    case C.ev.start
+        if verbose, fprintf(' simulation start event.'); end
+        
+    case C.ev.fault     % three phase to ground fault by default
+        error('process_event:err','faults not supported yet.');
+        
+    case C.ev.trip_branch
+        branch_id = event(C.ev.branch_loc);
+        branch_ix = ps.branch_i(branch_id);
+        if ps.branch(branch_ix,C.br.status) ~= 0
+            ps.branch(branch_ix,C.br.status) = 0;
+            discrete = true;
+            % output the branch id
+            if verbose, fprintf('  t = %.4f: Branch %d tripped...\n',t,branch_id); end
+        end
+        
+    case C.ev.close_branch
+        branch_id = event(C.ev.branch_loc);
+        branch_ix = ps.branch_i(branch_id);
+        if ps.branch(branch_ix,C.br.status) ~= 1
+            ps.branch(branch_ix,C.br.status) = 1;
+            discrete = true;
+            % output the branch id
+            if verbose, fprintf('  t = %.4f: Branch %d closed...\n',t,branch_id); end
+        end
+        
+    case C.ev.trip_bus
+        bus_no = event(1,C.ev.bus_loc);
+        br_set = any( ps.branch(:,1:2)==bus_no, 2 );
+        ps.branch(br_set,C.br.status) = 0;
+        % trip gens and shunts at this bus
+        ps.gen(ps.gen(:,1)==bus_no,C.gen.status) = 0;
+        ps.shunt(ps.shunt(:,1)==bus_no,C.shunt.status) = 0;
+        discrete = true;
+        if verbose, fprintf('  t = %.4f: Bus %d tripped...\n',t,bus_no); end
+        
+    case C.ev.trip_gen
+        gen_id = event(C.ev.gen_loc);
+        gen_ix = ps.gen_i(gen_id);
+        if ps.gen(gen_ix,C.gen.status)~=0
+            ps.gen(gen_ix,C.gen.status) = 0;
+            ps.gen(gen_ix,C.ge.Pg) = 0;
+            ps.gen(gen_ix,C.ge.Qg) = 0;
+            if verbose, fprintf('  t = %.4f: Gen %d tripped...\n',t,gen_id); end
+            discrete = true;
+        end
+        
+    case C.ev.shed_load
+        shunt_id = event(C.ev.shunt_loc);
+        change_by = event(C.ev.change_by);
+        prev_load = ps.shunt(shunt_id,C.sh.P).*ps.shunt(shunt_id,C.sh.factor);
+        if change_by
+            ps.shunt(shunt_id,C.sh.factor) = max(ps.shunt(shunt_id,C.sh.factor) - event(C.ev.quantity), 0);
+            curr_load = ps.shunt(shunt_id,C.sh.P).*ps.shunt(shunt_id,C.sh.factor);
+            discrete = true;
+            bus_no = ps.shunt(shunt_id,1);
+            if opt.verbose, fprintf('  t = %.4f: %.2f MW of load shedding at bus %d...\n',t,prev_load-curr_load,bus_no); end
+        else
+            curr_load = max(prev_load - event(C.ev.quantity),0);
+            ps.shunt(shunt_id,C.sh.P) = max(ps.shunt(shunt_id,C.sh.P)-event(C.ev.quantity),0);
+            ps.shunt(shunt_id,C.sh.Q) = max(ps.shunt(shunt_id,C.sh.Q)-event(C.ev.quantity),0);
+            discrete = true;
+            bus_no = ps.shunt(shunt_id,1);
+            if opt.verbose, fprintf('  t = %.4f: %.2f MW of load shedding at bus %d...\n',t,prev_load-curr_load,bus_no); end
+        end
+        
+    case C.ev.trip_shunt
+        shunt_id = event(C.ev.shunt_loc);
+        bus_no = ps.shunt(shunt_id,1);
+        if ps.shunt(shunt_id,C.sh.status) ~= 0
+            ps.shunt(shunt_id,C.sh.status) = 0;
+            discrete = true;
+            % output the branch id
+            if verbose, fprintf('  t = %.4f: shunt %d at bus %d tripped...\n',t,shunt_id,bus_no); end
+        end
+        
+    case C.ev.close_shunt
+        shunt_id = event(C.ev.shunt_loc);
+        shunt_id = ps.shunt_i(shunt_id);
+        bus_no = ps.shunt(shunt_id,1);
+        if ps.shunt(shunt_id,C.sh.status) ~= 1
+            ps.shunt(shunt_id,C.sh.status) = 1;
+            discrete = true;
+            % output the branch id
+            if verbose, fprintf('  t = %.4f: Branch %d at bus %d closed...\n',t,shunt_id,bus_no); end
+        end
+    case C.ev.oc_relay
+        branch_id = event(C.ev.branch_loc);
+        branch_ix = ps.branch_i(branch_id);
+        if ps.branch(branch_ix,C.br.status) ~= 0
+            ps.branch(branch_ix,C.br.status) = 0;
+            % added by Falah
+            ps.branch(branch_ix,C.br.R) = inf;
+            ps.branch(branch_ix,C.br.X) = inf;
+            ps.branch(branch_ix,C.br.B) = 0;
+            %%%%%%%%%%%%
+            discrete = true;
+            % output the branch id
+            if verbose, fprintf('  t = %.4f: Branch %d tripped...\n',t,branch_id); end
+        end
+        
+        % Added by falah for RTS 96 if line 119 change the goal
+%         if branch_id == 119 
+% %             ps.goal = 2; % means the target line 118
+% %             ps.f_int = 38; % initial flow of line 118 
+%             
+%         elseif branch_id == 118
+%             ps.goal = 20;
+%         end
+        
+        % Added by falah for RTS 96 if line 118 trip means line 120
+        
+%         if branch_id == 118
+%             branch_id = 120;
+%             branch_ix = ps.branch_i(branch_id);
+%             if ps.branch(branch_ix,C.br.status) ~= 0
+%                 ps.branch(branch_ix,C.br.status) = 0;
+%                 % added by Falah
+%                 ps.branch(branch_ix,C.br.R) = inf;
+%                 ps.branch(branch_ix,C.br.X) = inf;
+%                 ps.branch(branch_ix,C.br.B) = 0;
+%                 %%%%%%%%%%%%
+%                 discrete = true;
+%                 % output the branch id
+%                 if verbose, fprintf('  t = %.4f: Branch %d tripped...\n',t,branch_id); end
+%             end
+%         end
+        
+        
+    case C.ev.temp_relay
+        branch_id = event(C.ev.branch_loc);
+        branch_ix = ps.branch_i(branch_id);
+        if ps.branch(branch_ix,C.br.status) ~= 0
+            ps.branch(branch_ix,C.br.status) = 0;
+            discrete = true;
+            % output the branch id
+            if verbose, fprintf('  t = %.4f: Branch %d tripped...\n',t,branch_id); end
+        end
+    case C.ev.dist_relay
+        branch_id = event(C.ev.branch_loc);
+        branch_ix = ps.branch_i(branch_id);
+        if ps.branch(branch_ix,C.br.status) ~= 0
+            ps.branch(branch_ix,C.br.status) = 0;
+            discrete = true;
+            % output the branch id
+            if verbose, fprintf('  t = %.4f: Branch %d tripped...\n',t,branch_id); end
+        end
+    case C.ev.uvls_relay
+        shunt_id = event(C.ev.shunt_loc);
+        change_by = event(C.ev.change_by);
+        prev_load = ps.shunt(shunt_id,C.sh.P).*ps.shunt(shunt_id,C.sh.factor);
+        if change_by
+            ps.shunt(shunt_id,C.sh.factor) = max(ps.shunt(shunt_id,C.sh.factor) - event(C.ev.quantity), 0);
+            curr_load = ps.shunt(shunt_id,C.sh.P).*ps.shunt(shunt_id,C.sh.factor);
+            discrete = true;
+            bus_no = ps.shunt(shunt_id,1);
+            if opt.verbose, fprintf('  t = %.4f: %.2f MW of load shedding at bus %d...\n',t,prev_load-curr_load,bus_no); end
+        else
+            curr_load = max(prev_load - event(C.ev.quantity),0);
+            ps.shunt(shunt_id,C.sh.P) = max(ps.shunt(shunt_id,C.sh.P)-event(C.ev.quantity),0);
+            ps.shunt(shunt_id,C.sh.Q) = max(ps.shunt(shunt_id,C.sh.Q)-event(C.ev.quantity),0);
+            discrete = true;
+            bus_no = ps.shunt(shunt_id,1);
+            if opt.verbose, fprintf('  t = %.4f: %.2f MW of load shedding at bus %d...\n',t,prev_load-curr_load,bus_no); end
+        end
+    case C.ev.ufls_relay
+        shunt_id = event(C.ev.shunt_loc);
+        change_by = event(C.ev.change_by);
+        prev_load = ps.shunt(shunt_id,C.sh.P).*ps.shunt(shunt_id,C.sh.factor);
+        if change_by
+            ps.shunt(shunt_id,C.sh.factor) = max(ps.shunt(shunt_id,C.sh.factor) - event(C.ev.quantity), 0);
+            curr_load = ps.shunt(shunt_id,C.sh.P).*ps.shunt(shunt_id,C.sh.factor);
+            discrete = true;
+            bus_no = ps.shunt(shunt_id,1);
+            if opt.verbose, fprintf('  t = %.4f: %.2f MW of load shedding at bus %d...\n',t,prev_load-curr_load,bus_no); end
+        else
+            curr_load = max(prev_load - event(C.ev.quantity),0);
+            ps.shunt(shunt_id,C.sh.P) = max(ps.shunt(shunt_id,C.sh.P)-event(C.ev.quantity),0);
+            ps.shunt(shunt_id,C.sh.Q) = max(ps.shunt(shunt_id,C.sh.Q)-event(C.ev.quantity),0);
+            discrete = true;
+            bus_no = ps.shunt(shunt_id,1);
+            if opt.verbose, fprintf('  t = %.4f: %.2f MW of load shedding at bus %d...\n',t,prev_load-curr_load,bus_no); end
+        end
+    case C.ev.em_control
+        type = C.ev.em_control;
+        [P_g_EC,P_L_EC,theta_EC,P_line_EC,cvx_optval_EC,load_locations,ps] = DC_power_flow_RTS_96(ps.load_attack,ps,ps.Load_buses,type);
+        if cvx_optval_EC ~= inf
+            
+            shunt_buses_power  = P_L_EC(ps.shunt_buses_loc);
+            ps.shunt(:,C.sh.P)   = ps.shunt(:,C.sh.P) + shunt_buses_power;
+            gen_buses_power  = P_g_EC(ps.gen_location);
+            ps.gov(:,C.gov.Pref) = ps.gov(:,C.gov.Pref) + gen_buses_power;
+            ps.Load_buses(:,2)   = shunt_buses_power;
+            ps.itr = ps.itr+1;
+        end
+        
+        
+    otherwise
+        if event(C.ev.type) ~=23 & event(C.ev.type) ~=24 
+            error('process_event:err','Unknown event type');
+        elseif event(C.ev.type) ==24 
+            2;
+        else
+%             ps.shunt(35:51,C.sh.P) = ps.original(35:51);
+            ps.shunt(:,C.sh.P) = ps.original(:);
+        end
+end
